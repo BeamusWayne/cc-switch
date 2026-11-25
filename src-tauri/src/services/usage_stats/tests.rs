@@ -2086,7 +2086,8 @@ fn test_provider_and_model_filters_cover_detail_and_rollup() -> Result<(), AppEr
     // ⑧ 趋势（>24h 走天分桶 + rollup 分支）。
     let t_start = local_ts(2026, 6, 8, 0, 0, 0);
     let t_end = local_ts(2026, 6, 10, 23, 59, 0);
-    let trends = db.get_daily_trends(Some(t_start), Some(t_end), None, Some("Packy"), None)?;
+    let trends =
+        db.get_daily_trends(Some(t_start), Some(t_end), None, Some("Packy"), None, None)?;
     let total_req: u64 = trends.iter().map(|d| d.request_count).sum();
     assert_eq!(total_req, 7, "明细 2 + rollup 5");
 
@@ -2100,6 +2101,7 @@ fn test_provider_and_model_filters_cover_detail_and_rollup() -> Result<(), AppEr
         None,
         Some("Packy"),
         Some("claude-sonnet-4-6"),
+        None,
     )?;
     let hourly_req: u64 = hourly.iter().map(|d| d.request_count).sum();
     assert_eq!(hourly_req, 1, "仅 a-1 命中（a-2 计价模型不同）");
@@ -2309,7 +2311,7 @@ fn test_effective_usage_dedup_prefers_proxy_for_session_sources() -> Result<(), 
     let expected_hit_rate = 60.0_f64 / 682.0_f64;
     assert!((summary.cache_hit_rate - expected_hit_rate).abs() < 1e-9);
 
-    let trends = db.get_daily_trends(Some(0), Some(40_000), None, None, None)?;
+    let trends = db.get_daily_trends(Some(0), Some(40_000), None, None, None, None)?;
     assert_eq!(trends.iter().map(|stat| stat.request_count).sum::<u64>(), 4);
 
     let provider_stats = db.get_provider_stats(None, None, None, None, None)?;
@@ -3231,7 +3233,14 @@ fn test_get_daily_trends_respects_shorter_than_24_hours() -> Result<(), AppError
         )?;
     }
 
-    let stats = db.get_daily_trends(Some(0), Some(15 * 60 * 60), Some("claude"), None, None)?;
+    let stats = db.get_daily_trends(
+        Some(0),
+        Some(15 * 60 * 60),
+        Some("claude"),
+        None,
+        None,
+        None,
+    )?;
     assert_eq!(stats.len(), 15);
     assert_eq!(stats[3].request_count, 1);
     assert_eq!(stats[3].runtime_stats.len(), 1);
@@ -3268,7 +3277,7 @@ fn test_get_daily_trends_hourly_runtime_stats_keep_the_inclusive_end() -> Result
         }
     }
 
-    let all = db.get_daily_trends(Some(0), Some(7200), None, None, None)?;
+    let all = db.get_daily_trends(Some(0), Some(7200), None, None, None, None)?;
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].request_count, 0);
     assert!(serde_json::to_value(&all[0])
@@ -3302,6 +3311,7 @@ fn test_get_daily_trends_hourly_runtime_stats_keep_the_inclusive_end() -> Result
         Some("claude"),
         Some("Shared"),
         Some("m1"),
+        None,
     )?;
     assert_eq!(filtered[1].request_count, 3);
     assert_eq!(filtered[1].runtime_stats.len(), 1);
@@ -3391,7 +3401,7 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
         }
     }
 
-    let stats = db.get_daily_trends(Some(start), Some(end), Some("claude"), None, None)?;
+    let stats = db.get_daily_trends(Some(start), Some(end), Some("claude"), None, None, None)?;
     assert_eq!(stats.len(), 3);
     assert_eq!(stats[0].request_count, 3);
     assert_eq!(stats[0].total_tokens, 210);
@@ -3408,13 +3418,74 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
     assert_eq!(stats[2].request_count, 1);
     assert_eq!(stats[2].total_tokens, 275);
 
-    let all = db.get_daily_trends(Some(start), Some(end + 24 * 60 * 60), None, None, None)?;
+    let all = db.get_daily_trends(
+        Some(start),
+        Some(end + 24 * 60 * 60),
+        None,
+        None,
+        None,
+        None,
+    )?;
     assert_eq!(all[0].request_count, 4);
     assert_eq!(all[0].runtime_stats.len(), 2);
     assert_eq!(all[0].runtime_stats[1].app_type, "codex");
     assert_eq!(all[0].runtime_stats[1].request_count, 1);
     assert_eq!(all[1].runtime_stats[0].app_type, "claude");
     assert!(all[3].runtime_stats.is_empty());
+
+    // The first partial week starts on the selected Friday and keeps the
+    // detailed rows, daily rollups and folded Claude apps in one bucket.
+    let monday = local_ts(2024, 3, 4, 0, 0, 0);
+    let weeks = db.get_daily_trends(
+        Some(start),
+        Some(monday),
+        Some("claude"),
+        None,
+        None,
+        Some(UsageTrendPeriod::Week),
+    )?;
+    assert_eq!(weeks.len(), 2);
+    assert_eq!(
+        weeks[0].date,
+        local_day_start_rfc3339(NaiveDate::from_ymd_opt(2024, 3, 1).unwrap())
+    );
+    assert_eq!(weeks[0].runtime_stats[0].request_count, 8);
+    assert_eq!(weeks[0].total_tokens, 1085);
+    assert_eq!(
+        weeks[1].date,
+        local_day_start_rfc3339(NaiveDate::from_ymd_opt(2024, 3, 4).unwrap())
+    );
+    assert_eq!(weeks[1].request_count, 0);
+
+    let months = db.get_daily_trends(
+        Some(local_ts(2024, 2, 24, 12, 0, 0)),
+        Some(end),
+        None,
+        None,
+        None,
+        Some(UsageTrendPeriod::Month),
+    )?;
+    assert_eq!(months.len(), 2);
+    assert_eq!(
+        months[0].date,
+        local_day_start_rfc3339(NaiveDate::from_ymd_opt(2024, 2, 24).unwrap())
+    );
+    assert_eq!(months[0].request_count, 0);
+    assert_eq!(months[1].request_count, 9);
+
+    // The heatmap requests calendar days even when the selected time span is
+    // shorter than 24 hours. The last second still counts once.
+    let days = db.get_daily_trends(
+        Some(local_ts(2024, 3, 2, 23, 0, 0)),
+        Some(end),
+        Some("claude"),
+        None,
+        None,
+        Some(UsageTrendPeriod::Day),
+    )?;
+    assert_eq!(days.len(), 2);
+    assert_eq!(days[0].request_count, 0);
+    assert_eq!(days[1].request_count, 1);
 
     Ok(())
 }
@@ -5006,9 +5077,17 @@ fn test_merged_reasoning_models_keep_totals_filters_and_pooled_medians() -> Resu
         Some("agy"),
         None,
         model,
+        None,
     )?;
     assert_eq!(trends.iter().map(|t| t.request_count).sum::<u64>(), 8);
-    let hourly = db.get_daily_trends(Some(ts - 3600), Some(ts + 1), Some("agy"), None, model)?;
+    let hourly = db.get_daily_trends(
+        Some(ts - 3600),
+        Some(ts + 1),
+        Some("agy"),
+        None,
+        model,
+        None,
+    )?;
     assert_eq!(hourly.iter().map(|t| t.request_count).sum::<u64>(), 6);
     let logs = db.get_request_logs(
         &LogFilters {

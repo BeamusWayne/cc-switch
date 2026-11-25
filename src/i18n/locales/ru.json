@@ -2690,7 +2690,7 @@
       "trendChartType": "График динамики",
       "trendChartTypes": {
         "bar": "Столбчатый",
-        "area": "С областями"
+        "area": "Линейный"
       }
     },
     "providerFilter": {
@@ -2711,6 +2711,8 @@
       "hitRateHelp": "Попадания в кэш ÷ (свежий ввод + запись в кэш + попадания в кэш)."
     },
     "heatmap": {
+      "toggle": "Тепловая карта",
+      "daily": "тепловая карта по дням",
       "title": "Тепловая карта использования",
       "spanSummary": "Токены: {{tokens}} · запросы: {{requests}} · {{cost}}",
       "showMore": "Показать больше",
@@ -2727,7 +2729,9 @@
       "requestsLegend": "Запросы",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "по часам",
-      "daily": "по дням"
+      "daily": "по дням",
+      "weekly": "по неделям",
+      "monthly": "по месяцам"
     },
     "tabs": {
       "label": "Подробности",

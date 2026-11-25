@@ -2620,7 +2620,7 @@
       "trendChartType": "Trend grafiği",
       "trendChartTypes": {
         "bar": "Çubuk",
-        "area": "Alan"
+        "area": "Çizgi"
       }
     },
     "providerFilter": {
@@ -2641,6 +2641,8 @@
       "hitRateHelp": "Önbellek isabetleri ÷ (yeni girdi + önbellek yazmaları + önbellek isabetleri)."
     },
     "heatmap": {
+      "toggle": "Isı haritası",
+      "daily": "günlük ısı haritası",
       "title": "Kullanım ısı haritası",
       "spanSummary": "{{tokens}} tokenleri · {{requests}} istekleri · {{cost}}",
       "showMore": "Daha fazlasını göster",
@@ -2657,7 +2659,9 @@
       "requestsLegend": "İstekler",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "Saatlik",
-      "daily": "Günlük"
+      "daily": "Günlük",
+      "weekly": "Haftalık",
+      "monthly": "Aylık"
     },
     "tabs": {
       "label": "Ayrıntılar",

@@ -2691,7 +2691,7 @@
       "trendChartType": "Trend chart",
       "trendChartTypes": {
         "bar": "Bar",
-        "area": "Area"
+        "area": "Line"
       }
     },
     "providerFilter": {
@@ -2712,6 +2712,8 @@
       "hitRateHelp": "Cache hits ÷ (fresh input + cache writes + cache hits)."
     },
     "heatmap": {
+      "toggle": "Heatmap",
+      "daily": "daily heatmap",
       "title": "Usage heatmap",
       "spanSummary": "{{tokens}} tokens · {{requests}} requests · {{cost}}",
       "showMore": "Show more",
@@ -2728,7 +2730,9 @@
       "requestsLegend": "Requests",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "hourly",
-      "daily": "daily"
+      "daily": "daily",
+      "weekly": "weekly",
+      "monthly": "monthly"
     },
     "tabs": {
       "label": "Details",

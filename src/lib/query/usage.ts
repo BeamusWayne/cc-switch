@@ -10,6 +10,7 @@ import type {
   LogFilters,
   UsageRangeSelection,
   UsageScopeFilters,
+  UsageTrendPeriod,
 } from "@/types/usage";
 
 const DEFAULT_REFETCH_INTERVAL_MS = 30000;
@@ -83,6 +84,7 @@ export const usageKeys = {
     customEndDate: number | undefined,
     filters?: UsageScopeFilters,
     liveEndTime?: boolean,
+    period?: UsageTrendPeriod,
   ) =>
     [
       ...usageKeys.all,
@@ -94,6 +96,7 @@ export const usageKeys = {
       filters?.appType ?? null,
       filters?.providerName ?? null,
       filters?.model ?? null,
+      period ?? null,
     ] as const,
   firstDate: (filters?: UsageScopeFilters) =>
     [
@@ -238,7 +241,7 @@ export function useUsageSummaryByApp(
 export function useUsageTrends(
   range: UsageRangeSelection,
   filters?: UsageScopeFilters,
-  options?: UsageQueryOptions,
+  options?: UsageQueryOptions & { period?: UsageTrendPeriod },
 ) {
   const effective = normalizeScopeFilters(filters);
   return useQuery({
@@ -248,6 +251,7 @@ export function useUsageTrends(
       range.customEndDate,
       effective,
       range.liveEndTime,
+      options?.period,
     ),
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
@@ -257,6 +261,7 @@ export function useUsageTrends(
         effective.appType,
         effective.providerName,
         effective.model,
+        options?.period,
       );
     },
     enabled: options?.enabled ?? true,
@@ -266,7 +271,7 @@ export function useUsageTrends(
   });
 }
 
-/** 最早有用量记录的日期，「全部」的按年热力图据此决定从哪一年画起 */
+/** 「全部」的图表从筛选条件内最早有用量记录的日期开始。 */
 export function useUsageFirstDate(
   filters?: UsageScopeFilters,
   options?: UsageQueryOptions,
@@ -280,7 +285,7 @@ export function useUsageFirstDate(
         effective.providerName,
         effective.model,
       ),
-    placeholderData: keepPreviousData,
+    enabled: options?.enabled ?? true,
     refetchInterval: options?.refetchInterval ?? DEFAULT_REFETCH_INTERVAL_MS,
     refetchIntervalInBackground: options?.refetchIntervalInBackground ?? false,
   });

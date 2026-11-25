@@ -105,6 +105,8 @@ export interface DailyStats extends Omit<RuntimeTrendStats, "appType"> {
   totalTokens: number;
 }
 
+export type UsageTrendPeriod = "day" | "week" | "month";
+
 export interface ProviderStats {
   providerId: string;
   appType: string;

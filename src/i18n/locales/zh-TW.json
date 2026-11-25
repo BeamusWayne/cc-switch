@@ -2691,7 +2691,7 @@
       "trendChartType": "趨勢圖樣式",
       "trendChartTypes": {
         "bar": "長條圖",
-        "area": "曲線面積圖"
+        "area": "折線圖"
       }
     },
     "providerFilter": {
@@ -2712,6 +2712,8 @@
       "hitRateHelp": "快取命中 ÷（新增輸入 + 快取寫入 + 快取命中）。"
     },
     "heatmap": {
+      "toggle": "熱力圖",
+      "daily": "按天熱力圖",
       "title": "用量熱力圖",
       "spanSummary": "{{tokens}} Token · {{requests}} 次請求 · {{cost}}",
       "showMore": "顯示更多",
@@ -2728,7 +2730,9 @@
       "requestsLegend": "請求數",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "按小時",
-      "daily": "按天"
+      "daily": "按天",
+      "weekly": "按週",
+      "monthly": "按月"
     },
     "tabs": {
       "label": "明細",

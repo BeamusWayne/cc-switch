@@ -2686,7 +2686,7 @@
       "trendChartType": "추세 차트",
       "trendChartTypes": {
         "bar": "막대",
-        "area": "영역 그래프"
+        "area": "꺾은선형 차트"
       }
     },
     "providerFilter": {
@@ -2707,6 +2707,8 @@
       "hitRateHelp": "캐시 적중 ÷ (신규 입력 + 캐시 쓰기 + 캐시 적중)."
     },
     "heatmap": {
+      "toggle": "히트맵",
+      "daily": "일별 히트맵",
       "title": "사용량 히트맵",
       "spanSummary": "{{tokens}} 토큰 · {{requests}} 요청 · {{cost}}",
       "showMore": "더 보기",
@@ -2723,7 +2725,9 @@
       "requestsLegend": "요청 수",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "매시간",
-      "daily": "일일"
+      "daily": "일일",
+      "weekly": "주간",
+      "monthly": "월간"
     },
     "tabs": {
       "label": "세부 정보",

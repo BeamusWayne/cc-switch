@@ -74,11 +74,9 @@ vi.mock("@/components/usage/UsageHero", () => ({
 }));
 
 vi.mock("@/components/usage/UsageTrendChart", () => ({
-  UsageTrendChart: () => <div data-testid="usage-trend" />,
-}));
-
-vi.mock("@/components/usage/UsageHeatmap", () => ({
-  UsageHeatmap: () => <div data-testid="usage-heatmap" />,
+  UsageTrendChart: ({ range }: { range: { preset: string } }) => (
+    <div data-testid="usage-trend" data-range={range.preset} />
+  ),
 }));
 
 vi.mock("@/components/usage/RequestLogTable", () => ({
@@ -217,17 +215,18 @@ describe("UsageDashboard", () => {
     });
   });
 
-  it("swaps the trend chart for the heatmap on the all-time range", async () => {
+  it("passes the all-time range to the shared chart and overview", async () => {
     const user = userEvent.setup();
     renderDashboard();
 
     expect(await screen.findByTestId("usage-trend")).toBeInTheDocument();
-    expect(screen.queryByTestId("usage-heatmap")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "pick-all" }));
 
-    expect(await screen.findByTestId("usage-heatmap")).toBeInTheDocument();
-    expect(screen.queryByTestId("usage-trend")).not.toBeInTheDocument();
+    expect(screen.getByTestId("usage-trend")).toHaveAttribute(
+      "data-range",
+      "all",
+    );
     expect(usageHeroMock).toHaveBeenLastCalledWith(
       expect.objectContaining({ range: { preset: "all" } }),
     );
@@ -242,7 +241,10 @@ describe("UsageDashboard", () => {
     first.unmount();
 
     const second = renderDashboard();
-    expect(await screen.findByTestId("usage-heatmap")).toBeInTheDocument();
+    expect(await screen.findByTestId("usage-trend")).toHaveAttribute(
+      "data-range",
+      "all",
+    );
     expect(
       screen.getByRole("tab", { name: /^usage\.tabs\.models/ }),
     ).toHaveAttribute("aria-selected", "true");

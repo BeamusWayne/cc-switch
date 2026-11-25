@@ -1,23 +1,12 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import { UsageHeatmap } from "@/components/usage/UsageHeatmap";
+import { buildUsageTrendChartData } from "@/components/usage/UsageTrendChart";
 import type { DailyStats } from "@/types/usage";
-
-const trends = vi.hoisted(() => vi.fn());
-
-vi.mock("@/lib/query/usage", () => ({
-  useUsageFirstDate: () => ({ data: "2025-06-01", isSuccess: true }),
-  useUsageTrends: (...args: unknown[]) => trends(...args),
-}));
-
-vi.mock("@/hooks/useMoneyFormat", () => ({
-  useMoneyFormat: () => ({ money: (value: number) => `$${value.toFixed(2)}` }),
-}));
 
 function day(
   dayOfMonth: number,
   apps: [appType: string, requests: number, cost?: number][] = [],
-  unclassifiedRequests = 0,
 ): DailyStats {
   const runtimeStats = apps.map(([appType, requests, cost = 0]) => ({
     appType,
@@ -28,10 +17,7 @@ function day(
     totalCacheCreationTokens: 0,
     totalCacheReadTokens: 0,
   }));
-  const requestCount = apps.reduce(
-    (sum, [, requests]) => sum + requests,
-    unclassifiedRequests,
-  );
+  const requestCount = apps.reduce((sum, [, requests]) => sum + requests, 0);
   return {
     date: new Date(2025, 5, dayOfMonth).toISOString(),
     runtimeStats,
@@ -45,113 +31,84 @@ function day(
   };
 }
 
-function fills(cell: HTMLElement) {
-  return Array.from(cell.children, (child) =>
-    (child as HTMLElement).style.getPropertyValue("--heat-fill"),
-  );
+function props(rows: DailyStats[]) {
+  return {
+    points: buildUsageTrendChartData(rows, {
+      isHourly: false,
+      dateLocale: "en-US",
+      startDate: Date.parse(rows[0].date) / 1000,
+      endDate: Date.parse(rows[rows.length - 1].date) / 1000,
+    }),
+    locale: "en-US",
+    formatValue: (value: number | null) => String(value ?? "—"),
+    onPreview: vi.fn(),
+    onSelect: vi.fn(),
+  };
 }
 
-describe("UsageHeatmap runtime colors", () => {
-  beforeEach(() => {
-    vi.setSystemTime(new Date(2025, 5, 8, 12));
-    trends.mockReset();
-  });
+function fill(cell: HTMLElement) {
+  return cell
+    .querySelector<HTMLElement>(".usage-heat-fill")
+    ?.style.getPropertyValue("--heat-fill");
+}
 
-  afterEach(() => vi.useRealTimers());
-
-  it("uses one app color per day and scales intensity by the daily total", () => {
-    trends.mockReturnValue({
-      data: [
-        day(1, [["claude", 1]]),
-        day(2, [["codex", 1]]),
-        day(3, [
-          ["claude", 8],
-          ["codex", 2],
-        ]),
-        day(4, [["dsh", 1]]),
-        day(5, [], 1),
-      ],
+describe("UsageHeatmap", () => {
+  it("uses one horizontal cell per day and shades the day's largest app by the active metric", () => {
+    const rows = [
+      day(1, [["claude", 1, 1]]),
+      day(2, [["codex", 1, 2]]),
+      day(3, [
+        ["claude", 8, 2],
+        ["codex", 2, 8],
+      ]),
+      day(4),
+    ];
+    const heatmapProps = props(rows);
+    const { rerender } = render(
+      <UsageHeatmap {...heatmapProps} metric="requests" />,
+    );
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(4);
+    expect(buttons[0].parentElement).toHaveStyle({
+      gridTemplateColumns: "repeat(4, minmax(0, 1fr))",
     });
-    const { container } = render(
-      <UsageHeatmap metric="requests" refreshIntervalMs={0} />,
+    expect(fill(buttons[0])).toContain(
+      "var(--agent-claude) var(--heat-strength-1)",
     );
-    expect(fills(screen.getByRole("img", { name: /Claude Code$/ }))).toEqual([
-      expect.stringContaining("var(--agent-claude) var(--heat-strength-1)"),
-    ]);
-    const mixed = screen.getByRole("img", { name: /Claude Code.*Codex/ });
-    expect(fills(mixed)).toEqual([
-      expect.stringContaining("var(--agent-claude) var(--heat-strength-4)"),
-    ]);
-    expect(screen.getByText("DeepSeek Harness")).toBeInTheDocument();
-    const scale = Array.from(
-      container.querySelectorAll<HTMLElement>('[style*="--text-2"]'),
+    expect(fill(buttons[2])).toContain(
+      "var(--agent-claude) var(--heat-strength-4)",
     );
-    expect(
-      scale.map((swatch) => swatch.style.getPropertyValue("--heat-fill")),
-    ).toEqual(
-      [1, 2, 3, 4].map(
-        (level) =>
-          `color-mix(in srgb, var(--text-2) var(--heat-strength-${level}), transparent)`,
-      ),
+    expect(fill(buttons[3])).toBeUndefined();
+
+    rerender(<UsageHeatmap {...heatmapProps} metric="cost" />);
+    expect(fill(buttons[2])).toContain(
+      "var(--agent-codex) var(--heat-strength-4)",
     );
-    expect(screen.queryByText("Gemini CLI")).not.toBeInTheDocument();
-    expect(
-      container.querySelector('.usage-heat-fill.flex-1[style*="--heat-1"]'),
-    ).toBeInTheDocument();
-    fireEvent.mouseEnter(mixed);
-    const [claude, codex] = within(screen.getByRole("tooltip")).getAllByRole(
-      "listitem",
-    );
-    expect(claude).toHaveTextContent(/Claude Code\s*8/);
-    expect(codex).toHaveTextContent(/Codex\s*2/);
   });
 
-  it("changes the dominant app with the selected metric and shows the cost breakdown", () => {
-    trends.mockReturnValue({
-      data: [
-        day(3, [
-          ["claude", 8, 2],
-          ["codex", 2, 8],
-          ["gemini", 1],
-        ]),
-      ],
-    });
-    render(<UsageHeatmap metric="cost" refreshIntervalMs={0} />);
-    const mixed = screen.getByRole("img", { name: /Claude Code.*Codex/ });
-    expect(fills(mixed)).toEqual([
-      expect.stringContaining("var(--agent-codex) var(--heat-strength-1)"),
-    ]);
-    expect(screen.getByText("Gemini CLI")).toBeInTheDocument();
-    fireEvent.mouseEnter(mixed);
-    const rows = within(screen.getByRole("tooltip")).getAllByRole("listitem");
-    expect(rows[0]).toHaveTextContent(/Claude Code\s*\$2\.00/);
-    expect(rows[1]).toHaveTextContent(/Codex\s*\$8\.00/);
-    expect(rows[2]).toHaveTextContent(/Gemini CLI\s*\$0\.00/);
-  });
-
-  it("keeps the selected runtime, provider and model filters on the trend query", () => {
-    trends.mockReturnValue({ data: [day(2, [["codex", 1]])] });
+  it("keeps the first day in its weekday column without clickable padding", () => {
+    const rows = Array.from({ length: 17 }, (_, index) => day(index + 1));
+    const heatmapProps = props(rows);
     render(
       <UsageHeatmap
-        metric="hitRate"
-        appType="codex"
-        providerName="Example"
-        model="model-a"
-        refreshIntervalMs={0}
+        {...heatmapProps}
+        metric="tokens"
+        activeKey={rows[0].date}
       />,
     );
-    expect(trends).toHaveBeenCalledWith(
-      expect.anything(),
-      {
-        appType: "codex",
-        providerName: "Example",
-        model: "model-a",
-      },
-      expect.anything(),
-    );
-    expect(fills(screen.getByRole("img", { name: /Codex$/ }))).toEqual([
-      expect.stringContaining("var(--agent-codex) var(--heat-strength-1)"),
-    ]);
-    expect(screen.getAllByRole("img")).toHaveLength(1);
+
+    const buttons = screen.getAllByRole("button");
+    expect(buttons).toHaveLength(17);
+    // June 1 was a Sunday, so the visible calendar starts at the bottom of week one.
+    expect(buttons[0]).toHaveStyle({ gridColumn: "2", gridRow: "8" });
+    expect(buttons[1]).toHaveStyle({ gridColumn: "3", gridRow: "2" });
+    expect(buttons[0]).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.mouseEnter(buttons[1]);
+    expect(heatmapProps.onPreview).toHaveBeenLastCalledWith(rows[1].date);
+    fireEvent.mouseLeave(buttons[1]);
+    expect(heatmapProps.onPreview).toHaveBeenLastCalledWith();
+    fireEvent.click(buttons[1]);
+    expect(heatmapProps.onSelect).toHaveBeenLastCalledWith(rows[1].date);
   });
 });

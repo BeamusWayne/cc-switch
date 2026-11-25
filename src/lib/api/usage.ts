@@ -3,6 +3,7 @@ import type {
   UsageSummary,
   UsageSummaryByApp,
   DailyStats,
+  UsageTrendPeriod,
   ProviderStats,
   ModelStats,
   RequestLog,
@@ -91,6 +92,7 @@ export const usageApi = {
     appType?: string,
     providerName?: string,
     model?: string,
+    period?: UsageTrendPeriod,
   ): Promise<DailyStats[]> => {
     return invoke("get_usage_trends", {
       startDate,
@@ -98,6 +100,7 @@ export const usageApi = {
       appType,
       providerName,
       model,
+      period,
     });
   },
 

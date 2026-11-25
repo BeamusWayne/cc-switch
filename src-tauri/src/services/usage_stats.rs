@@ -9,13 +9,41 @@ use crate::services::sql_helpers::{
     fresh_input_sql, real_total_tokens_sql, INPUT_TOKEN_SEMANTICS_FRESH,
     INPUT_TOKEN_SEMANTICS_LEGACY, INPUT_TOKEN_SEMANTICS_TOTAL,
 };
-use chrono::{Local, NaiveDate, TimeZone, Timelike};
+use chrono::{Datelike, Days, Local, Months, NaiveDate, TimeZone, Timelike};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::str::FromStr;
 use std::sync::LazyLock;
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UsageTrendPeriod {
+    Day,
+    Week,
+    Month,
+}
+
+impl UsageTrendPeriod {
+    fn start_of(self, date: NaiveDate) -> NaiveDate {
+        match self {
+            Self::Day => date,
+            Self::Week => date
+                .checked_sub_days(Days::new(u64::from(date.weekday().num_days_from_monday())))
+                .unwrap_or(date),
+            Self::Month => date.with_day(1).unwrap_or(date),
+        }
+    }
+
+    fn next(self, start: NaiveDate) -> Option<NaiveDate> {
+        match self {
+            Self::Day => start.succ_opt(),
+            Self::Week => start.checked_add_days(Days::new(7)),
+            Self::Month => start.checked_add_months(Months::new(1)),
+        }
+    }
+}
 
 /// 使用量汇总
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1551,7 +1579,7 @@ impl Database {
         Ok(summaries)
     }
 
-    /// 获取每日趋势（滑动窗口，<=24h 按小时，>24h 按天，窗口与汇总一致）
+    /// 获取趋势。未指定日历周期时，<=24h 按小时，>24h 按天。
     pub fn get_daily_trends(
         &self,
         start_date: Option<i64>,
@@ -1559,6 +1587,7 @@ impl Database {
         app_type: Option<&str>,
         provider_name: Option<&str>,
         model: Option<&str>,
+        period: Option<UsageTrendPeriod>,
     ) -> Result<Vec<DailyStats>, AppError> {
         let conn = lock_conn!(self.conn);
         let filter = UsageFilter {
@@ -1571,13 +1600,13 @@ impl Database {
         let end_ts = end_date.unwrap_or_else(|| Local::now().timestamp());
         let mut start_ts = start_date.unwrap_or_else(|| end_ts - 24 * 60 * 60);
 
-        if start_ts >= end_ts {
+        if start_ts > end_ts {
             start_ts = end_ts - 24 * 60 * 60;
         }
 
         const BUCKET_SECONDS: i64 = 60 * 60;
         let duration = end_ts - start_ts;
-        let hourly = duration <= 24 * BUCKET_SECONDS;
+        let hourly = period.is_none() && duration <= 24 * BUCKET_SECONDS;
         let hourly_bucket_count = if hourly {
             ((duration + BUCKET_SECONDS - 1) / BUCKET_SECONDS).max(1)
         } else {
@@ -1641,7 +1670,8 @@ impl Database {
 
         let start_day = local_datetime_from_timestamp(start_ts)?.date_naive();
         let end_day = local_datetime_from_timestamp(end_ts)?.date_naive();
-        let bucket_count = (end_day.signed_duration_since(start_day).num_days() + 1) as usize;
+        let period = period.unwrap_or(UsageTrendPeriod::Day);
+        let bucket_start = |date: NaiveDate| period.start_of(date).max(start_day);
         let parse_bucket_date = |date: &str| {
             NaiveDate::parse_from_str(date, "%Y-%m-%d")
                 .map_err(|err| AppError::Database(format!("解析趋势日期失败: {err}")))
@@ -1651,7 +1681,7 @@ impl Database {
         for row in detail_rows {
             let (bucket, app_type, totals) = row?;
             buckets
-                .entry(parse_bucket_date(&bucket)?)
+                .entry(bucket_start(parse_bucket_date(&bucket)?))
                 .or_default()
                 .add(app_type, totals);
         }
@@ -1683,18 +1713,22 @@ impl Database {
         for row in rollup_rows {
             let (bucket, app_type, totals) = row?;
             buckets
-                .entry(parse_bucket_date(&bucket)?)
+                .entry(bucket_start(parse_bucket_date(&bucket)?))
                 .or_default()
                 .add(app_type, totals);
         }
 
-        let mut stats = Vec::with_capacity(bucket_count);
-        let mut current_day = start_day;
-        for _ in 0..bucket_count {
-            let date = local_day_start_rfc3339(current_day);
-            let bucket = buckets.remove(&current_day).unwrap_or_default();
+        let mut stats = Vec::new();
+        let mut current_period = period.start_of(start_day);
+        while current_period <= end_day {
+            let day = current_period.max(start_day);
+            let date = local_day_start_rfc3339(day);
+            let bucket = buckets.remove(&day).unwrap_or_default();
             stats.push(bucket.into_stats(date));
-            current_day = current_day.succ_opt().unwrap_or(current_day);
+            let Some(next_period) = period.next(current_period) else {
+                break;
+            };
+            current_period = next_period;
         }
         Ok(stats)
     }

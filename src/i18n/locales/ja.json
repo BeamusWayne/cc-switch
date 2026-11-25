@@ -2691,7 +2691,7 @@
       "trendChartType": "トレンドグラフの種類",
       "trendChartTypes": {
         "bar": "棒グラフ",
-        "area": "面グラフ"
+        "area": "折れ線グラフ"
       }
     },
     "providerFilter": {
@@ -2712,6 +2712,8 @@
       "hitRateHelp": "キャッシュヒット ÷（新規入力 + キャッシュ書き込み + キャッシュヒット）。"
     },
     "heatmap": {
+      "toggle": "ヒートマップ",
+      "daily": "日別ヒートマップ",
       "title": "使用量ヒートマップ",
       "spanSummary": "{{tokens}} トークン · {{requests}} リクエスト · {{cost}}",
       "showMore": "もっと見る",
@@ -2728,7 +2730,9 @@
       "requestsLegend": "リクエスト数",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "1 時間ごと",
-      "daily": "1 日ごと"
+      "daily": "1 日ごと",
+      "weekly": "週ごと",
+      "monthly": "月ごと"
     },
     "tabs": {
       "label": "明細",

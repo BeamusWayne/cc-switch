@@ -67,7 +67,6 @@ import { RequestLogColumnsMenu } from "./RequestLogColumnsMenu";
 import { resolveRequestLogColumns } from "./requestLogColumns";
 import type { UsageDisplaySettings } from "@/types";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
-import { UsageHeatmap } from "./UsageHeatmap";
 import {
   LOG_PAGE_SIZES,
   type LogPageSize,
@@ -898,25 +897,19 @@ export function UsageDashboard({
         metric={metric}
         onMetricChange={setMetric}
       />
-      {/* 「全部」看长期分布用热力图；24 小时到 30 天这类短范围用趋势图 */}
-      {range.preset === "all" ? (
-        <UsageHeatmap
-          metric={metric}
-          appType={appType}
-          providerName={providerName}
-          model={model}
-          refreshIntervalMs={0}
-        />
-      ) : (
-        <UsageTrendChart
-          range={range}
-          metric={metric}
-          appType={appType}
-          providerName={providerName}
-          model={model}
-          refreshIntervalMs={0}
-        />
-      )}
+      <UsageTrendChart
+        range={range}
+        metric={metric}
+        appType={appType}
+        providerName={providerName}
+        model={model}
+        refreshIntervalMs={0}
+        onChartTypeChange={
+          onUsageDisplayChange &&
+          ((trendChartType) =>
+            onUsageDisplayChange({ ...usageDisplay, trendChartType }))
+        }
+      />
     </section>
   );
 

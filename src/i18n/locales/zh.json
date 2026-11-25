@@ -2691,7 +2691,7 @@
       "trendChartType": "趋势图样式",
       "trendChartTypes": {
         "bar": "柱形图",
-        "area": "曲线面积图"
+        "area": "折线图"
       }
     },
     "providerFilter": {
@@ -2712,6 +2712,8 @@
       "hitRateHelp": "缓存命中 ÷（新增输入 + 缓存写入 + 缓存命中）。"
     },
     "heatmap": {
+      "toggle": "热力图",
+      "daily": "按天热力图",
       "title": "用量热力图",
       "spanSummary": "{{tokens}} Token · {{requests}} 次请求 · {{cost}}",
       "showMore": "显示更多",
@@ -2728,7 +2730,9 @@
       "requestsLegend": "请求数",
       "titleMetric": "{{metric}} · {{granularity}}",
       "hourly": "按小时",
-      "daily": "按天"
+      "daily": "按天",
+      "weekly": "按周",
+      "monthly": "按月"
     },
     "tabs": {
       "label": "明细",

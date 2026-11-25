@@ -1,31 +1,41 @@
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useTranslation } from "react-i18next";
 import {
-  Area,
-  AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
   Tooltip,
   XAxis,
   YAxis,
 } from "recharts";
-import { useUsageTrends } from "@/lib/query/usage";
-import { Loader2 } from "lucide-react";
+import { useUsageFirstDate, useUsageTrends } from "@/lib/query/usage";
+import { ChevronDown, Loader2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   fmtInt,
   formatHitRatePercent,
+  formatTokensShort,
   getLocaleFromLanguage,
   parseFiniteNumber,
   resolveTrendChartType,
+  TREND_CHART_TYPES,
+  type TrendChartType,
 } from "./format";
 import { resolveUsageRange } from "@/lib/usageRange";
-import type { RuntimeTrendStats, UsageRangeSelection } from "@/types/usage";
+import type {
+  RuntimeTrendStats,
+  UsageRangeSelection,
+  UsageTrendPeriod,
+} from "@/types/usage";
 import { useMoneyFormat } from "@/hooks/useMoneyFormat";
 import { useSettingsQuery } from "@/lib/query";
 import type { UsageMetric } from "./rememberedChoice";
 import { runtimeColor, runtimeName } from "./runtimePalette";
+import { UsageHeatmap } from "./UsageHeatmap";
 
 interface UsageTrendChartProps {
   range: UsageRangeSelection;
@@ -35,6 +45,9 @@ interface UsageTrendChartProps {
   providerName?: string;
   model?: string;
   refreshIntervalMs: number;
+  onChartTypeChange?: (
+    next: TrendChartType,
+  ) => Promise<boolean> | boolean | void;
 }
 
 export interface UsageTrendStatLike {
@@ -54,7 +67,7 @@ export interface UsageTrendChartPoint {
   rawDate: string;
   /** Short tick label shown on the X axis. */
   label: string;
-  /** Fuller label used by the tooltip. */
+  /** Fuller label used by the selected interval. */
   tooltipLabel: string;
   hour: number;
   inputTokens: number;
@@ -71,7 +84,9 @@ export interface UsageTrendChartPoint {
   runtimeStats: Record<string, TrendMetrics>;
 }
 
-type TrendMetrics = Pick<UsageTrendChartPoint, UsageMetric>;
+type TrendMetrics = Pick<UsageTrendChartPoint, UsageMetric> & {
+  cacheableInput: number;
+};
 const DEFAULT_COLOR = "var(--chart-usage)";
 
 export function trendMetricsOf(
@@ -86,6 +101,10 @@ export function trendMetricsOf(
       stat.totalCacheReadTokens,
     cost: parseFiniteNumber(stat.totalCost) ?? null,
     hitRate: hitRateOf(stat),
+    cacheableInput:
+      stat.totalInputTokens +
+      stat.totalCacheCreationTokens +
+      stat.totalCacheReadTokens,
   };
 }
 
@@ -124,13 +143,14 @@ export function buildUsageTrendChartData(
   trends: UsageTrendStatLike[] | undefined,
   options: {
     isHourly: boolean;
+    period?: UsageTrendPeriod;
     dateLocale: string;
     /** Inclusive range endpoints (unix seconds). Used to decide year labels. */
     startDate: number;
     endDate: number;
   },
 ): UsageTrendChartPoint[] {
-  const { isHourly, dateLocale, startDate, endDate } = options;
+  const { isHourly, period, dateLocale, startDate, endDate } = options;
   const startYear = new Date(startDate * 1000).getFullYear();
   const endYear = new Date(endDate * 1000).getFullYear();
   const spansMultipleYears = startYear !== endYear;
@@ -170,16 +190,21 @@ export function buildUsageTrendChartData(
               minute: "2-digit",
               hourCycle: "h23",
             })
-        : spansMultipleYears
+        : period === "month"
           ? pointDate.toLocaleDateString(dateLocale, {
-              year: "2-digit",
-              month: "2-digit",
-              day: "2-digit",
+              month: "short",
+              ...(spansMultipleYears ? { year: "2-digit" } : {}),
             })
-          : pointDate.toLocaleDateString(dateLocale, {
-              month: "2-digit",
-              day: "2-digit",
-            });
+          : spansMultipleYears
+            ? pointDate.toLocaleDateString(dateLocale, {
+                year: "2-digit",
+                month: "2-digit",
+                day: "2-digit",
+              })
+            : pointDate.toLocaleDateString(dateLocale, {
+                month: "2-digit",
+                day: "2-digit",
+              });
 
       return {
         xKey,
@@ -280,6 +305,27 @@ export function formatUsageTrendTokenTickLabel(
 }
 
 const AXIS_TICK = { fill: "var(--text-3)", fontSize: 11 };
+const CHART_HEIGHT = 236;
+const DAY_SECONDS = 24 * 60 * 60;
+
+function localDayNumber(timestamp: number) {
+  const date = new Date(timestamp * 1000);
+  return (
+    Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) /
+    (DAY_SECONDS * 1000)
+  );
+}
+
+function trendPeriod(
+  startDate: number,
+  endDate: number,
+): UsageTrendPeriod | undefined {
+  if (endDate - startDate <= DAY_SECONDS) return undefined;
+  const dayCount = localDayNumber(endDate) - localDayNumber(startDate) + 1;
+  if (dayCount > 120) return "month";
+  if (dayCount > 31) return "week";
+  return "day";
+}
 
 /**
  * 量容器宽度给图表用，不用 Recharts 的 ResponsiveContainer / responsive：它们在 ResizeObserver 回调里排一次异步渲染，
@@ -310,23 +356,73 @@ export function UsageTrendChart({
   providerName,
   model,
   refreshIntervalMs,
+  onChartTypeChange,
 }: UsageTrendChartProps) {
   const { t, i18n } = useTranslation();
-  const { money, moneyTick, rate } = useMoneyFormat();
-  // 柱形图 / 曲线面积图在用量「设置」里选
+  const { moneyCompact, moneyTick, rate } = useMoneyFormat();
   const { data: settings } = useSettingsQuery();
-  const chartType = resolveTrendChartType(settings?.usageDisplay);
-  const { startDate, endDate } = resolveUsageRange(range);
-  const { data: trends, isLoading } = useUsageTrends(
-    range,
-    { appType, providerName, model },
-    {
-      refetchInterval: refreshIntervalMs > 0 ? refreshIntervalMs : false,
-    },
-  );
+  const savedChartType = resolveTrendChartType(settings?.usageDisplay);
+  const [chartType, setChartType] = useState(savedChartType);
+  const [savingChartType, setSavingChartType] = useState(false);
+  const [groupByApp, setGroupByApp] = useState(true);
+  const isAllTime = range.preset === "all";
+  const [wasAllTime, setWasAllTime] = useState(isAllTime);
+  const [showHeatmap, setShowHeatmap] = useState(isAllTime);
+  const [previewKey, setPreviewKey] = useState<string>();
+  const [pinnedTime, setPinnedTime] = useState<number>();
+  useEffect(() => setChartType(savedChartType), [savedChartType]);
 
-  const durationSeconds = Math.max(endDate - startDate, 0);
-  const isHourly = durationSeconds <= 24 * 60 * 60;
+  if (wasAllTime !== isAllTime) {
+    setWasAllTime(isAllTime);
+    setPreviewKey(undefined);
+    if (isAllTime) setShowHeatmap(true);
+  }
+
+  const changeChartType = async (next: TrendChartType) => {
+    setShowHeatmap(false);
+    setPreviewKey(undefined);
+    setChartType(next);
+    if (!onChartTypeChange) return;
+    setSavingChartType(true);
+    try {
+      if ((await onChartTypeChange(next)) === false) {
+        setChartType(savedChartType);
+      }
+    } catch {
+      setChartType(savedChartType);
+    } finally {
+      setSavingChartType(false);
+    }
+  };
+  const filters = { appType, providerName, model };
+  const refetchInterval = refreshIntervalMs > 0 ? refreshIntervalMs : false;
+  const firstDate = useUsageFirstDate(filters, {
+    enabled: isAllTime,
+    refetchInterval,
+  });
+  const firstTimestamp = firstDate.data
+    ? Date.parse(`${firstDate.data}T00:00:00`) / 1000
+    : undefined;
+  const chartRange: UsageRangeSelection =
+    isAllTime && firstTimestamp != null
+      ? { preset: "custom", customStartDate: firstTimestamp, liveEndTime: true }
+      : range;
+  const { startDate, endDate } = resolveUsageRange(chartRange);
+  const hasRange =
+    !isAllTime || (firstTimestamp != null && startDate <= endDate);
+  const period = showHeatmap
+    ? "day"
+    : (trendPeriod(startDate, endDate) ?? (isAllTime ? "day" : undefined));
+  const isHourly = period == null;
+  const trendsQuery = useUsageTrends(chartRange, filters, {
+    enabled: hasRange,
+    period,
+    refetchInterval,
+  });
+  const isLoading =
+    (isAllTime && firstDate.isLoading) ||
+    (hasRange && (trendsQuery.isLoading || trendsQuery.isPlaceholderData));
+  const trends = hasRange && !isLoading ? trendsQuery.data : undefined;
   const language = i18n.resolvedLanguage || i18n.language || "en";
   const dateLocale = getLocaleFromLanguage(language);
   const tokenTickFormatter = useMemo(
@@ -338,27 +434,92 @@ export function UsageTrendChart({
     () =>
       buildUsageTrendChartData(trends, {
         isHourly,
+        period,
         dateLocale,
         startDate,
         endDate,
       }),
-    [trends, isHourly, dateLocale, startDate, endDate],
+    [trends, isHourly, period, dateLocale, startDate, endDate],
   );
 
-  // 单指标：图只画指标条选中的那一个，单 Y 轴，标题和 tooltip 跟着走。
+  const activePoint = useMemo(() => {
+    const pinnedPoint =
+      pinnedTime != null && pinnedTime >= startDate && pinnedTime <= endDate
+        ? chartData.find((_, index) => {
+            const next = chartData[index + 1];
+            return !next || pinnedTime < Date.parse(next.rawDate) / 1000;
+          })
+        : undefined;
+    return (
+      chartData.find(({ xKey }) => xKey === previewKey) ??
+      pinnedPoint ??
+      [...chartData].reverse().find((point) => point.requests > 0) ??
+      chartData[chartData.length - 1]
+    );
+  }, [chartData, endDate, pinnedTime, previewKey, startDate]);
+  const activeValue = activePoint?.[metric];
+  const percentage = useMemo(
+    () =>
+      new Intl.NumberFormat(dateLocale, {
+        style: "percent",
+        maximumFractionDigits: 1,
+      }),
+    [dateLocale],
+  );
+  const intervalOptions = useMemo(() => {
+    const formatter = new Intl.DateTimeFormat(dateLocale, {
+      month: "short",
+      day: "numeric",
+      ...(isHourly
+        ? { hour: "2-digit", minute: "2-digit" }
+        : period === "day"
+          ? { weekday: "short" }
+          : {}),
+      ...(new Date(startDate * 1000).getFullYear() !==
+      new Date(endDate * 1000).getFullYear()
+        ? { year: "numeric" }
+        : {}),
+    });
+    return chartData.map(({ rawDate, tooltipLabel, xKey }, index) => {
+      const date = new Date(rawDate);
+      const next = chartData[index + 1];
+      const end = new Date(
+        next ? Date.parse(next.rawDate) - 1000 : endDate * 1000,
+      );
+      const isPeriod = period === "week" || period === "month";
+      return {
+        xKey,
+        label: Number.isNaN(date.getTime())
+          ? tooltipLabel
+          : isPeriod && end > date && end.toDateString() !== date.toDateString()
+            ? `${formatter.format(date)} – ${formatter.format(end)}`
+            : formatter.format(date),
+      };
+    });
+  }, [chartData, dateLocale, endDate, isHourly, period, startDate]);
+
+  // 单指标：图只画指标条选中的那一个，单 Y 轴，标题和明细跟着走。
   const metricLabel = {
     cost: t("usage.trend.cost"),
     requests: t("usage.trend.requestsLegend"),
     tokens: t("usage.trend.tokens"),
     hitRate: t("usage.cacheHitRate"),
   }[metric];
+  const granularity = showHeatmap
+    ? t("usage.heatmap.daily")
+    : t(
+        {
+          hour: "usage.trend.hourly",
+          day: "usage.trend.daily",
+          week: "usage.trend.weekly",
+          month: "usage.trend.monthly",
+        }[period ?? "hour"],
+      );
 
-  const formatMetric = (value: unknown) => {
-    if (metric === "cost") return money(value, 4);
-    if (metric === "hitRate") {
-      const rate = parseFiniteNumber(value);
-      return rate == null ? "—" : formatHitRatePercent(rate);
-    }
+  const formatMetric = (value: number | null | undefined) => {
+    if (value == null) return "—";
+    if (metric === "cost") return moneyCompact(value);
+    if (metric === "hitRate") return formatHitRatePercent(value);
     return fmtInt(value, dateLocale);
   };
   const formatYTick = (value: unknown) => {
@@ -368,6 +529,10 @@ export function UsageTrendChart({
       return `${+((Number(value) || 0) * 100).toFixed(1)}%`;
     return formatUsageTrendTokenTickLabel(value, tokenTickFormatter);
   };
+  const formatSummary = (value: number | null | undefined) =>
+    metric === "tokens" && value != null
+      ? formatTokensShort(value, language, 2)
+      : formatMetric(value);
 
   const runtimes = useMemo(
     () =>
@@ -376,78 +541,115 @@ export function UsageTrendChart({
       ).sort(),
     [chartData],
   );
+  const canGroupByApp = (!appType || appType === "all") && runtimes.length > 1;
+  const seriesApps = canGroupByApp && groupByApp ? runtimes : [];
+  const breakdown = Object.entries(activePoint?.runtimeStats ?? {})
+    .map(([app, stats]) => ({ app, value: stats[metric] }))
+    .sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity));
+  const legendApps = showHeatmap ? runtimes : seriesApps;
   const hitRateFloor = useMemo(
     () =>
       hitRateAxisFloor(
-        chartData.flatMap((point) => [
-          point.hitRate,
-          ...Object.values(point.runtimeStats).map((stats) => stats.hitRate),
-        ]),
+        chartData.flatMap((point) =>
+          seriesApps.length
+            ? seriesApps.map((app) => point.runtimeStats[app]?.hitRate ?? null)
+            : [point.hitRate],
+        ),
       ),
-    [chartData],
+    [chartData, seriesApps],
   );
-  const Chart = chartType === "bar" ? BarChart : AreaChart;
+  const Chart = chartType === "bar" ? BarChart : LineChart;
   const [chartBoxRef, chartWidth] = useContainerWidth();
-  const renderValueRow = (label: string, value: unknown, color?: string) => (
-    <div key={label} className="flex items-center gap-2 tabular-nums">
-      {color && (
-        <span
-          aria-hidden="true"
-          className="h-2 w-2 rounded-[2px]"
-          style={{ background: color }}
-        />
-      )}
-      <span className="text-fg-2">{label}</span>
-      <span className="ms-auto ps-3">{formatMetric(value)}</span>
-    </div>
-  );
-  const renderTooltip = ({ active, payload }: any) => {
-    if (!active || !payload?.length) return null;
-    const point = payload[0]?.payload as UsageTrendChartPoint | undefined;
-    if (!point) return null;
-    return (
-      <div className="rounded-[8px] border border-border bg-surface px-3 py-2 text-caption text-fg-1 shadow-v7-md">
-        <p className="mb-1 font-semibold">{point.tooltipLabel}</p>
-        {renderValueRow(
-          metricLabel,
-          point[metric],
-          runtimes.length ? undefined : DEFAULT_COLOR,
-        )}
-        {runtimes
-          .filter((app) =>
-            Object.prototype.hasOwnProperty.call(point.runtimeStats, app),
-          )
-          .map((app) =>
-            renderValueRow(
-              runtimeName(app),
-              point.runtimeStats[app][metric],
-              runtimeColor(app),
-            ),
-          )}
-      </div>
+  const toggleClass = (active: boolean) =>
+    cn(
+      "rounded-[6px] px-2 py-1 text-caption whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60",
+      active ? "bg-surface text-fg-1 shadow-sm" : "text-fg-2 hover:text-fg-1",
     );
+  const pinInterval = (key: string) => {
+    setPreviewKey(undefined);
+    setPinnedTime(Math.max(startDate, Date.parse(key) / 1000));
   };
 
   return (
-    <section aria-labelledby="usage-trend-title" className="px-4 pb-2.5 pt-5">
-      <h2
-        id="usage-trend-title"
-        className="m-0 min-h-7 whitespace-nowrap text-caption font-semibold leading-7 text-fg-2"
-      >
-        {t("usage.trend.titleMetric", {
-          metric: metricLabel,
-          granularity: isHourly
-            ? t("usage.trend.hourly")
-            : t("usage.trend.daily"),
-        })}
-      </h2>
+    <section
+      aria-labelledby="usage-trend-title"
+      className="px-4 pb-3 pt-5 [container-type:inline-size]"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <h2
+          id="usage-trend-title"
+          className="m-0 min-h-7 whitespace-nowrap text-caption font-semibold leading-7 text-fg-2"
+        >
+          {t("usage.trend.titleMetric", {
+            metric: metricLabel,
+            granularity,
+          })}
+        </h2>
+        <div className="flex flex-wrap items-center gap-2">
+          {canGroupByApp && !showHeatmap && (
+            <div className="inline-flex gap-0.5 rounded-[8px] bg-subtle p-0.5">
+              <button
+                type="button"
+                aria-pressed={!groupByApp}
+                className={toggleClass(!groupByApp)}
+                onClick={() => setGroupByApp(false)}
+              >
+                {t("usage.detail.total")}
+              </button>
+              <button
+                type="button"
+                aria-pressed={groupByApp}
+                className={toggleClass(groupByApp)}
+                onClick={() => setGroupByApp(true)}
+              >
+                {t("usage.app")}
+              </button>
+            </div>
+          )}
+          <div
+            role="group"
+            aria-label={t("usage.display.trendChartType")}
+            className="inline-flex gap-0.5 rounded-[8px] bg-subtle p-0.5"
+          >
+            <button
+              type="button"
+              aria-pressed={showHeatmap}
+              className={toggleClass(showHeatmap)}
+              onClick={() => {
+                setPreviewKey(undefined);
+                setShowHeatmap(true);
+              }}
+            >
+              {t("usage.heatmap.toggle")}
+            </button>
+            {[...TREND_CHART_TYPES].reverse().map((type) => (
+              <button
+                key={type}
+                type="button"
+                aria-pressed={!showHeatmap && chartType === type}
+                disabled={savingChartType}
+                className={toggleClass(!showHeatmap && chartType === type)}
+                onClick={() => {
+                  if (chartType !== type) void changeChartType(type);
+                  else {
+                    setPreviewKey(undefined);
+                    setShowHeatmap(false);
+                  }
+                }}
+              >
+                {t(`usage.display.trendChartTypes.${type}`)}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
 
-      {runtimes.length > 0 && (
+      {legendApps.length > 0 && (
         <ul
           data-testid="usage-trend-legend"
-          className="m-0 flex flex-wrap gap-x-4 gap-y-1 p-0 text-caption text-fg-2"
+          className="m-0 mt-2 flex flex-wrap gap-x-4 gap-y-1 p-0 text-caption text-fg-2"
         >
-          {runtimes.map((app) => (
+          {legendApps.map((app) => (
             <li key={app} className="flex items-center gap-1.5">
               <span
                 aria-hidden="true"
@@ -459,98 +661,214 @@ export function UsageTrendChart({
           ))}
         </ul>
       )}
-      <div ref={chartBoxRef} className="mt-1 h-[132px] w-full">
-        {isLoading ? (
-          <div className="flex h-full items-center justify-center">
-            <Loader2 className="h-5 w-5 animate-spin text-fg-3" />
-          </div>
-        ) : (
-          <Chart
-            width={chartWidth}
-            height={132}
-            data={chartData}
-            margin={{ top: 6, right: 0, left: 0, bottom: 0 }}
-          >
-            <CartesianGrid
-              vertical={false}
-              stroke="var(--chart-grid)"
-              strokeWidth={1}
+      <div className="mt-3 grid grid-cols-1 gap-4 [@container(min-width:700px)]:grid-cols-[minmax(0,1fr)_clamp(205px,27%,275px)]">
+        <div
+          ref={chartBoxRef}
+          className="min-w-0"
+          style={{
+            minHeight: isLoading || !showHeatmap ? CHART_HEIGHT : undefined,
+          }}
+        >
+          {isLoading ? (
+            <div
+              className="flex items-center justify-center"
+              style={{ height: CHART_HEIGHT }}
+            >
+              <Loader2 className="h-5 w-5 animate-spin text-fg-3" />
+            </div>
+          ) : showHeatmap ? (
+            <UsageHeatmap
+              points={chartData}
+              metric={metric}
+              locale={dateLocale}
+              activeKey={activePoint?.xKey}
+              formatValue={formatSummary}
+              onPreview={setPreviewKey}
+              onSelect={pinInterval}
             />
-            {/* 🔴 分类键必须是后端 RFC3339 桶时间戳（xKey），不能用显示文字，否则跨年错位 */}
-            <XAxis
-              dataKey="xKey"
-              axisLine={false}
-              tickLine={false}
-              tick={AXIS_TICK}
-              tickMargin={6}
-              minTickGap={12}
-              tickFormatter={(value) =>
-                formatUsageTrendTickLabel(String(value), chartData)
-              }
-              allowDuplicatedCategory={false}
-            />
-            <YAxis
-              width="auto"
-              axisLine={false}
-              tickLine={false}
-              tick={AXIS_TICK}
-              tickCount={3}
-              domain={metric === "hitRate" ? [hitRateFloor, 1] : undefined}
-              tickFormatter={formatYTick}
-            />
-            <Tooltip
-              content={renderTooltip}
-              cursor={
-                chartType === "bar"
-                  ? { fill: "var(--bg-subtle)" }
-                  : { stroke: "var(--text-3)", strokeDasharray: "3 3" }
-              }
-            />
-            {(runtimes.length ? runtimes : [null]).map((app) => {
-              const color = app == null ? DEFAULT_COLOR : runtimeColor(app);
-              const stackId =
-                app != null && metric !== "hitRate"
-                  ? "runtime-usage"
-                  : undefined;
-              const dataKey = (point: UsageTrendChartPoint) => {
-                const value =
-                  app == null
-                    ? point[metric]
-                    : point.runtimeStats[app]?.[metric];
-                if (value == null) return stackId ? 0 : null;
-                return metric === "cost" ? value * rate : value;
-              };
-              const name = app == null ? metricLabel : runtimeName(app);
-              return chartType === "bar" ? (
-                <Bar
-                  key={app ?? "total"}
-                  dataKey={dataKey}
-                  name={name}
-                  stackId={stackId}
-                  fill={color}
-                  radius={stackId ? undefined : [3, 3, 0, 0]}
-                  maxBarSize={36}
-                  isAnimationActive={false}
+          ) : (
+            <Chart
+              width={chartWidth}
+              height={CHART_HEIGHT}
+              data={chartData}
+              accessibilityLayer={false}
+              margin={{ top: 6, right: 10, left: 0, bottom: 0 }}
+              onMouseMove={({ activeLabel, isTooltipActive }) => {
+                setPreviewKey(
+                  isTooltipActive && typeof activeLabel === "string"
+                    ? activeLabel
+                    : undefined,
+                );
+              }}
+              onMouseLeave={() => setPreviewKey(undefined)}
+              onClick={({ activeLabel, isTooltipActive }) => {
+                if (isTooltipActive && typeof activeLabel === "string") {
+                  pinInterval(activeLabel);
+                }
+              }}
+            >
+              <CartesianGrid
+                vertical={false}
+                stroke="var(--chart-grid)"
+                strokeWidth={1}
+              />
+              {/* 🔴 分类键必须是后端 RFC3339 桶时间戳（xKey），不能用显示文字，否则跨年错位 */}
+              <XAxis
+                dataKey="xKey"
+                axisLine={false}
+                tickLine={false}
+                tick={AXIS_TICK}
+                tickMargin={6}
+                minTickGap={12}
+                tickFormatter={(value) =>
+                  formatUsageTrendTickLabel(String(value), chartData)
+                }
+                allowDuplicatedCategory={false}
+              />
+              <YAxis
+                width="auto"
+                axisLine={false}
+                tickLine={false}
+                tick={AXIS_TICK}
+                tickCount={4}
+                domain={metric === "hitRate" ? [hitRateFloor, 1] : undefined}
+                tickFormatter={formatYTick}
+              />
+              <Tooltip content={() => null} cursor={false} />
+              {activePoint && (
+                <ReferenceLine
+                  x={activePoint.xKey}
+                  stroke="var(--text-3)"
+                  strokeDasharray="3 3"
                 />
-              ) : (
-                <Area
-                  key={app ?? "total"}
-                  type="monotone"
-                  dataKey={dataKey}
-                  name={name}
-                  stackId={stackId}
-                  stroke={color}
-                  strokeWidth={2}
-                  fill={color}
-                  fillOpacity={stackId ? 0.3 : 0.16}
-                  dot={chartData.length === 1 ? { r: 3 } : false}
-                  activeDot={{ r: 4 }}
-                  isAnimationActive={false}
+              )}
+              {(seriesApps.length ? seriesApps : [null]).map((app) => {
+                const color = app == null ? DEFAULT_COLOR : runtimeColor(app);
+                const stackId =
+                  chartType === "bar" && app != null && metric !== "hitRate"
+                    ? "runtime-usage"
+                    : undefined;
+                const dataKey = (point: UsageTrendChartPoint) => {
+                  const value =
+                    app == null
+                      ? point[metric]
+                      : point.runtimeStats[app]?.[metric];
+                  if (value == null) {
+                    return app != null && metric !== "hitRate" ? 0 : null;
+                  }
+                  return metric === "cost" ? value * rate : value;
+                };
+                const name = app == null ? metricLabel : runtimeName(app);
+                return chartType === "bar" ? (
+                  <Bar
+                    key={app ?? "total"}
+                    dataKey={dataKey}
+                    name={name}
+                    stackId={stackId}
+                    fill={color}
+                    radius={stackId ? undefined : [3, 3, 0, 0]}
+                    maxBarSize={36}
+                    isAnimationActive={false}
+                  />
+                ) : (
+                  <Line
+                    key={app ?? "total"}
+                    type="monotone"
+                    dataKey={dataKey}
+                    name={name}
+                    stroke={color}
+                    strokeWidth={2}
+                    dot={
+                      chartData.length <= 14
+                        ? { r: 2.5, strokeWidth: 0, fill: color }
+                        : false
+                    }
+                    activeDot={{ r: 4 }}
+                    isAnimationActive={false}
+                  />
+                );
+              })}
+            </Chart>
+          )}
+        </div>
+        <aside
+          aria-label={t("usage.tabs.label")}
+          className="min-w-0 self-start rounded-[8px] border border-border bg-subtle p-3"
+        >
+          {activePoint ? (
+            <>
+              <label className="relative block text-caption text-fg-2">
+                <span className="sr-only">{t("usage.time")}</span>
+                <select
+                  className="w-full appearance-none truncate rounded-[4px] bg-transparent pe-5 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  value={activePoint.xKey}
+                  onChange={(event) => pinInterval(event.currentTarget.value)}
+                >
+                  {intervalOptions.map(({ xKey, label }) => (
+                    <option key={xKey} value={xKey}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown
+                  aria-hidden="true"
+                  className="pointer-events-none absolute end-0 top-1/2 h-3.5 w-3.5 -translate-y-1/2"
                 />
-              );
-            })}
-          </Chart>
-        )}
+              </label>
+              <div className="mt-1 flex flex-wrap items-baseline gap-x-2 tabular-nums">
+                <span className="text-caption text-fg-2">
+                  {metric === "hitRate" ? metricLabel : t("usage.detail.total")}
+                </span>
+                <strong className="min-w-0 break-all text-xl font-semibold text-fg-1">
+                  {formatSummary(activeValue)}
+                </strong>
+              </div>
+              {breakdown.length > 0 && (
+                <ul
+                  aria-label={t("usage.app")}
+                  className="m-0 mt-2.5 border-t border-border p-0"
+                >
+                  {breakdown.map(({ app, value }) => {
+                    const showShare =
+                      metric !== "hitRate" &&
+                      value != null &&
+                      activeValue != null &&
+                      activeValue > 0;
+                    return (
+                      <li
+                        key={app}
+                        className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-2 border-b border-border py-1.5 text-caption tabular-nums last:border-b-0"
+                      >
+                        <span className="flex min-w-0 items-center gap-2 text-fg-1">
+                          <span
+                            aria-hidden="true"
+                            className="h-0.5 w-2.5 shrink-0 rounded-full"
+                            style={{ background: runtimeColor(app) }}
+                          />
+                          <span className="min-w-0 break-words">
+                            {runtimeName(app)}
+                          </span>
+                        </span>
+                        <span className="flex items-baseline justify-end gap-2 text-end text-fg-1">
+                          {formatSummary(value)}
+                          {showShare && (
+                            <span className="min-w-[3.5em] text-fg-3">
+                              {percentage.format(value / activeValue)}
+                            </span>
+                          )}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </>
+          ) : (
+            <p className="m-0 text-caption text-fg-3">
+              {isLoading ? t("common.loading") : t("usage.noData")}
+            </p>
+          )}
+        </aside>
       </div>
     </section>
   );
