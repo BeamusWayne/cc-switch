@@ -1668,6 +1668,19 @@ impl Database {
                 "NULL".to_string()
             }
         };
+        // Reuse the model table's merge rules across detail and rollup rows.
+        let mut model_names: HashMap<String, String> = HashMap::new();
+        let mut display_model = |raw: Option<String>| -> Result<Option<String>, AppError> {
+            raw.map(|raw| match model_names.entry(raw) {
+                std::collections::hash_map::Entry::Occupied(entry) => Ok(entry.get().clone()),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let name = statistics_model_with(filter.pricing(&conn)?, entry.key())?;
+                    entry.insert(name.clone());
+                    Ok(name)
+                }
+            })
+            .transpose()
+        };
         let detail_app_type = folded_app_type_sql("l.app_type");
         let detail_model = trend_model_sql("l");
         let detail_sql = format!(
@@ -1701,7 +1714,7 @@ impl Database {
                 buckets
                     .entry(bucket)
                     .or_default()
-                    .add(app_type, model, totals);
+                    .add(app_type, display_model(model)?, totals);
             }
 
             let mut stats = Vec::with_capacity(hourly_bucket_count as usize);
@@ -1728,7 +1741,7 @@ impl Database {
             buckets
                 .entry(bucket_start(parse_bucket_date(&bucket)?))
                 .or_default()
-                .add(app_type, model, totals);
+                .add(app_type, display_model(model)?, totals);
         }
 
         let rollup_bounds = compute_rollup_date_bounds(Some(start_ts), Some(end_ts))?;
@@ -1762,7 +1775,7 @@ impl Database {
             buckets
                 .entry(bucket_start(parse_bucket_date(&bucket)?))
                 .or_default()
-                .add(app_type, model, totals);
+                .add(app_type, display_model(model)?, totals);
         }
 
         let mut stats = Vec::new();
