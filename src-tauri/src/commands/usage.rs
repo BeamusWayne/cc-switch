@@ -74,6 +74,7 @@ pub async fn get_usage_summary_by_app(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn get_usage_trends(
     state: State<'_, AppState>,
     start_date: Option<i64>,
@@ -82,6 +83,7 @@ pub async fn get_usage_trends(
     provider_name: Option<String>,
     model: Option<String>,
     period: Option<UsageTrendPeriod>,
+    include_models: Option<bool>,
 ) -> Result<Vec<DailyStats>, AppError> {
     run_db_query(&state, move |db| {
         db.get_daily_trends(
@@ -91,6 +93,7 @@ pub async fn get_usage_trends(
             provider_name.as_deref(),
             model.as_deref(),
             period,
+            include_models.unwrap_or_default(),
         )
     })
     .await

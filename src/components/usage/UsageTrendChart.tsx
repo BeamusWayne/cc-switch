@@ -27,6 +27,7 @@ import {
 } from "./format";
 import { resolveUsageRange } from "@/lib/usageRange";
 import type {
+  ModelTrendStats,
   RuntimeTrendStats,
   UsageRangeSelection,
   UsageTrendPeriod,
@@ -36,6 +37,7 @@ import { useSettingsQuery } from "@/lib/query";
 import type { UsageMetric } from "./rememberedChoice";
 import { runtimeColor, runtimeName } from "./runtimePalette";
 import { UsageHeatmap } from "./UsageHeatmap";
+import { buildModelTrendSeries } from "./modelTrendSeries";
 
 interface UsageTrendChartProps {
   range: UsageRangeSelection;
@@ -59,6 +61,7 @@ export interface UsageTrendStatLike {
   totalCacheReadTokens: number;
   totalCost: string | number;
   runtimeStats?: RuntimeTrendStats[];
+  modelStats?: ModelTrendStats[];
 }
 
 export interface UsageTrendChartPoint {
@@ -82,6 +85,7 @@ export interface UsageTrendChartPoint {
   /** 缓存命中率（0–1）= 缓存命中 ÷（新增输入 + 缓存写入 + 缓存命中），和指标条同口径；没有输入时为 null */
   hitRate: number | null;
   runtimeStats: Record<string, TrendMetrics>;
+  modelStats?: ModelTrendStats[];
 }
 
 type TrendMetrics = Pick<UsageTrendChartPoint, UsageMetric> & {
@@ -90,7 +94,7 @@ type TrendMetrics = Pick<UsageTrendChartPoint, UsageMetric> & {
 const DEFAULT_COLOR = "var(--chart-usage)";
 
 export function trendMetricsOf(
-  stat: Omit<UsageTrendStatLike, "date" | "runtimeStats">,
+  stat: Omit<UsageTrendStatLike, "date" | "runtimeStats" | "modelStats">,
 ): TrendMetrics {
   return {
     requests: stat.requestCount ?? 0,
@@ -217,6 +221,7 @@ export function buildUsageTrendChartData(
         cacheCreationTokens: stat.totalCacheCreationTokens,
         cacheReadTokens: stat.totalCacheReadTokens,
         ...trendMetricsOf(stat),
+        modelStats: stat.modelStats,
         runtimeStats: Object.fromEntries(
           (stat.runtimeStats ?? []).map((runtime) => [
             runtime.appType,
@@ -364,7 +369,7 @@ export function UsageTrendChart({
   const savedChartType = resolveTrendChartType(settings?.usageDisplay);
   const [chartType, setChartType] = useState(savedChartType);
   const [savingChartType, setSavingChartType] = useState(false);
-  const [groupByApp, setGroupByApp] = useState(true);
+  const [groupBy, setGroupBy] = useState<"total" | "app" | "model">("app");
   const isAllTime = range.preset === "all";
   const [wasAllTime, setWasAllTime] = useState(isAllTime);
   const [showHeatmap, setShowHeatmap] = useState(isAllTime);
@@ -414,9 +419,21 @@ export function UsageTrendChart({
     ? "day"
     : (trendPeriod(startDate, endDate) ?? (isAllTime ? "day" : undefined));
   const isHourly = period == null;
+  const modelMetric =
+    metric === "hitRate"
+      ? undefined
+      : (
+          {
+            cost: "totalCost",
+            requests: "requestCount",
+            tokens: "totalTokens",
+          } as const
+        )[metric];
+  const showModels = !showHeatmap && groupBy === "model" && modelMetric != null;
   const trendsQuery = useUsageTrends(chartRange, filters, {
     enabled: hasRange,
     period,
+    includeModels: showModels,
     refetchInterval,
   });
   const isLoading =
@@ -542,11 +559,53 @@ export function UsageTrendChart({
     [chartData],
   );
   const canGroupByApp = (!appType || appType === "all") && runtimes.length > 1;
-  const seriesApps = canGroupByApp && groupByApp ? runtimes : [];
-  const breakdown = Object.entries(activePoint?.runtimeStats ?? {})
-    .map(([app, stats]) => ({ app, value: stats[metric] }))
-    .sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity));
-  const legendApps = showHeatmap ? runtimes : seriesApps;
+  const seriesApps =
+    canGroupByApp && groupBy !== "total" && !showModels ? runtimes : [];
+  const mode = showModels ? "model" : seriesApps.length ? "app" : "total";
+  const modelSeries = useMemo(
+    () =>
+      showModels && modelMetric
+        ? buildModelTrendSeries(chartData, modelMetric)
+        : [],
+    [chartData, modelMetric, showModels],
+  );
+  const appSeries = (app: string) => ({
+    key: `app:${app}`,
+    name: runtimeName(app),
+    color: runtimeColor(app),
+    value: (point: UsageTrendChartPoint) => point.runtimeStats[app]?.[metric],
+  });
+  const legend = showHeatmap
+    ? runtimes.map(appSeries)
+    : showModels
+      ? modelSeries.map((series) => ({
+          ...series,
+          name:
+            series.model == null
+              ? t("usage.trend.otherModels")
+              : series.model || t("usage.trend.unknownModel"),
+        }))
+      : seriesApps.map(appSeries);
+  const plotSeries =
+    !showHeatmap && legend.length
+      ? legend
+      : [
+          {
+            key: "total",
+            name: metricLabel,
+            color: DEFAULT_COLOR,
+            value: (point: UsageTrendChartPoint) => point[metric],
+          },
+        ];
+  const breakdown = activePoint
+    ? (showModels
+        ? legend
+        : Object.keys(activePoint.runtimeStats).map(appSeries)
+      )
+        .map((series) => ({ ...series, value: series.value(activePoint) }))
+        .filter(({ value }) => !showModels || value !== 0)
+        .sort((a, b) => (b.value ?? -Infinity) - (a.value ?? -Infinity))
+    : [];
   const hitRateFloor = useMemo(
     () =>
       hitRateAxisFloor(
@@ -586,24 +645,31 @@ export function UsageTrendChart({
           })}
         </h2>
         <div className="flex flex-wrap items-center gap-2">
-          {canGroupByApp && !showHeatmap && (
+          {(canGroupByApp || modelMetric != null) && !showHeatmap && (
             <div className="inline-flex gap-0.5 rounded-[8px] bg-subtle p-0.5">
-              <button
-                type="button"
-                aria-pressed={!groupByApp}
-                className={toggleClass(!groupByApp)}
-                onClick={() => setGroupByApp(false)}
-              >
-                {t("usage.detail.total")}
-              </button>
-              <button
-                type="button"
-                aria-pressed={groupByApp}
-                className={toggleClass(groupByApp)}
-                onClick={() => setGroupByApp(true)}
-              >
-                {t("usage.app")}
-              </button>
+              {(
+                [
+                  ["total", t("usage.detail.total"), true],
+                  ["app", t("usage.app"), canGroupByApp],
+                  ["model", t("usage.model"), modelMetric != null],
+                ] as const
+              ).map(
+                ([group, label, visible]) =>
+                  visible && (
+                    <button
+                      key={group}
+                      type="button"
+                      aria-pressed={mode === group}
+                      className={toggleClass(mode === group)}
+                      onClick={() => {
+                        setPreviewKey(undefined);
+                        setGroupBy(group);
+                      }}
+                    >
+                      {label}
+                    </button>
+                  ),
+              )}
             </div>
           )}
           <div
@@ -644,19 +710,19 @@ export function UsageTrendChart({
         </div>
       </div>
 
-      {legendApps.length > 0 && (
+      {legend.length > 0 && (
         <ul
           data-testid="usage-trend-legend"
           className="m-0 mt-2 flex flex-wrap gap-x-4 gap-y-1 p-0 text-caption text-fg-2"
         >
-          {legendApps.map((app) => (
-            <li key={app} className="flex items-center gap-1.5">
+          {legend.map(({ key, name, color }) => (
+            <li key={key} className="flex min-w-0 items-center gap-1.5">
               <span
                 aria-hidden="true"
                 className="h-2 w-2 rounded-[2px]"
-                style={{ background: runtimeColor(app) }}
+                style={{ background: color }}
               />
-              {runtimeName(app)}
+              <span className="min-w-0 break-words">{name}</span>
             </li>
           ))}
         </ul>
@@ -742,26 +808,17 @@ export function UsageTrendChart({
                   strokeDasharray="3 3"
                 />
               )}
-              {(seriesApps.length ? seriesApps : [null]).map((app) => {
-                const color = app == null ? DEFAULT_COLOR : runtimeColor(app);
+              {plotSeries.map(({ key, name, color, value: valueOf }) => {
                 const stackId =
-                  chartType === "bar" && app != null && metric !== "hitRate"
-                    ? "runtime-usage"
-                    : undefined;
+                  key !== "total" && metric !== "hitRate" ? "usage" : undefined;
                 const dataKey = (point: UsageTrendChartPoint) => {
-                  const value =
-                    app == null
-                      ? point[metric]
-                      : point.runtimeStats[app]?.[metric];
-                  if (value == null) {
-                    return app != null && metric !== "hitRate" ? 0 : null;
-                  }
+                  const value = valueOf(point);
+                  if (value == null) return stackId ? 0 : null;
                   return metric === "cost" ? value * rate : value;
                 };
-                const name = app == null ? metricLabel : runtimeName(app);
                 return chartType === "bar" ? (
                   <Bar
-                    key={app ?? "total"}
+                    key={key}
                     dataKey={dataKey}
                     name={name}
                     stackId={stackId}
@@ -772,7 +829,7 @@ export function UsageTrendChart({
                   />
                 ) : (
                   <Line
-                    key={app ?? "total"}
+                    key={key}
                     type="monotone"
                     dataKey={dataKey}
                     name={name}
@@ -825,10 +882,10 @@ export function UsageTrendChart({
               </div>
               {breakdown.length > 0 && (
                 <ul
-                  aria-label={t("usage.app")}
+                  aria-label={t(showModels ? "usage.model" : "usage.app")}
                   className="m-0 mt-2.5 border-t border-border p-0"
                 >
-                  {breakdown.map(({ app, value }) => {
+                  {breakdown.map(({ key, name, color, value }) => {
                     const showShare =
                       metric !== "hitRate" &&
                       value != null &&
@@ -836,18 +893,16 @@ export function UsageTrendChart({
                       activeValue > 0;
                     return (
                       <li
-                        key={app}
+                        key={key}
                         className="grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-2 border-b border-border py-1.5 text-caption tabular-nums last:border-b-0"
                       >
                         <span className="flex min-w-0 items-center gap-2 text-fg-1">
                           <span
                             aria-hidden="true"
                             className="h-0.5 w-2.5 shrink-0 rounded-full"
-                            style={{ background: runtimeColor(app) }}
+                            style={{ background: color }}
                           />
-                          <span className="min-w-0 break-words">
-                            {runtimeName(app)}
-                          </span>
+                          <span className="min-w-0 break-words">{name}</span>
                         </span>
                         <span className="flex items-baseline justify-end gap-2 text-end text-fg-1">
                           {formatSummary(value)}

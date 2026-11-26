@@ -2729,6 +2729,8 @@
       "cost": "Cost",
       "requestsLegend": "Requests",
       "titleMetric": "{{metric}} · {{granularity}}",
+      "unknownModel": "Unknown model",
+      "otherModels": "Other models",
       "hourly": "hourly",
       "daily": "daily",
       "weekly": "weekly",

@@ -2086,8 +2086,15 @@ fn test_provider_and_model_filters_cover_detail_and_rollup() -> Result<(), AppEr
     // ⑧ 趋势（>24h 走天分桶 + rollup 分支）。
     let t_start = local_ts(2026, 6, 8, 0, 0, 0);
     let t_end = local_ts(2026, 6, 10, 23, 59, 0);
-    let trends =
-        db.get_daily_trends(Some(t_start), Some(t_end), None, Some("Packy"), None, None)?;
+    let trends = db.get_daily_trends(
+        Some(t_start),
+        Some(t_end),
+        None,
+        Some("Packy"),
+        None,
+        None,
+        false,
+    )?;
     let total_req: u64 = trends.iter().map(|d| d.request_count).sum();
     assert_eq!(total_req, 7, "明细 2 + rollup 5");
 
@@ -2102,6 +2109,7 @@ fn test_provider_and_model_filters_cover_detail_and_rollup() -> Result<(), AppEr
         Some("Packy"),
         Some("claude-sonnet-4-6"),
         None,
+        false,
     )?;
     let hourly_req: u64 = hourly.iter().map(|d| d.request_count).sum();
     assert_eq!(hourly_req, 1, "仅 a-1 命中（a-2 计价模型不同）");
@@ -2311,7 +2319,7 @@ fn test_effective_usage_dedup_prefers_proxy_for_session_sources() -> Result<(), 
     let expected_hit_rate = 60.0_f64 / 682.0_f64;
     assert!((summary.cache_hit_rate - expected_hit_rate).abs() < 1e-9);
 
-    let trends = db.get_daily_trends(Some(0), Some(40_000), None, None, None, None)?;
+    let trends = db.get_daily_trends(Some(0), Some(40_000), None, None, None, None, false)?;
     assert_eq!(trends.iter().map(|stat| stat.request_count).sum::<u64>(), 4);
 
     let provider_stats = db.get_provider_stats(None, None, None, None, None)?;
@@ -3240,6 +3248,7 @@ fn test_get_daily_trends_respects_shorter_than_24_hours() -> Result<(), AppError
         None,
         None,
         None,
+        false,
     )?;
     assert_eq!(stats.len(), 15);
     assert_eq!(stats[3].request_count, 1);
@@ -3277,7 +3286,7 @@ fn test_get_daily_trends_hourly_runtime_stats_keep_the_inclusive_end() -> Result
         }
     }
 
-    let all = db.get_daily_trends(Some(0), Some(7200), None, None, None, None)?;
+    let all = db.get_daily_trends(Some(0), Some(7200), None, None, None, None, false)?;
     assert_eq!(all.len(), 2);
     assert_eq!(all[0].request_count, 0);
     assert!(serde_json::to_value(&all[0])
@@ -3293,6 +3302,7 @@ fn test_get_daily_trends_hourly_runtime_stats_keep_the_inclusive_end() -> Result
     assert_eq!(last.total_cache_creation_tokens, 25);
     assert_eq!(last.total_cache_read_tokens, 100);
     let serialized = serde_json::to_value(last).unwrap();
+    assert!(serialized.get("modelStats").is_none());
     assert_eq!(
         serialized["runtimeStats"],
         serde_json::json!([
@@ -3305,6 +3315,14 @@ fn test_get_daily_trends_hourly_runtime_stats_keep_the_inclusive_end() -> Result
         ])
     );
 
+    let by_model = db.get_daily_trends(Some(0), Some(7200), None, None, None, None, true)?;
+    assert!(by_model[0].model_stats.is_empty());
+    let m1 = &by_model[1].model_stats[0];
+    assert_eq!(m1.model, "m1");
+    assert_eq!(m1.request_count, 4);
+    assert_eq!(m1.total_tokens, 410);
+    assert!((m1.total_cost - 0.04).abs() < 1e-9);
+
     let filtered = db.get_daily_trends(
         Some(0),
         Some(7200),
@@ -3312,8 +3330,12 @@ fn test_get_daily_trends_hourly_runtime_stats_keep_the_inclusive_end() -> Result
         Some("Shared"),
         Some("m1"),
         None,
+        true,
     )?;
     assert_eq!(filtered[1].request_count, 3);
+    assert_eq!(filtered[1].model_stats.len(), 1);
+    assert_eq!(filtered[1].model_stats[0].model, "m1");
+    assert_eq!(filtered[1].model_stats[0].request_count, 3);
     assert_eq!(filtered[1].runtime_stats.len(), 1);
     assert_eq!(filtered[1].runtime_stats[0].app_type, "claude");
     assert_eq!(filtered[1].runtime_stats[0].request_count, 3);
@@ -3401,7 +3423,15 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
         }
     }
 
-    let stats = db.get_daily_trends(Some(start), Some(end), Some("claude"), None, None, None)?;
+    let stats = db.get_daily_trends(
+        Some(start),
+        Some(end),
+        Some("claude"),
+        None,
+        None,
+        None,
+        false,
+    )?;
     assert_eq!(stats.len(), 3);
     assert_eq!(stats[0].request_count, 3);
     assert_eq!(stats[0].total_tokens, 210);
@@ -3425,6 +3455,7 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
         None,
         None,
         None,
+        false,
     )?;
     assert_eq!(all[0].request_count, 4);
     assert_eq!(all[0].runtime_stats.len(), 2);
@@ -3443,6 +3474,7 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
         None,
         None,
         Some(UsageTrendPeriod::Week),
+        false,
     )?;
     assert_eq!(weeks.len(), 2);
     assert_eq!(
@@ -3464,6 +3496,7 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
         None,
         None,
         Some(UsageTrendPeriod::Month),
+        false,
     )?;
     assert_eq!(months.len(), 2);
     assert_eq!(
@@ -3482,6 +3515,7 @@ fn test_get_daily_trends_groups_ranges_longer_than_24_hours_by_local_day() -> Re
         None,
         None,
         Some(UsageTrendPeriod::Day),
+        false,
     )?;
     assert_eq!(days.len(), 2);
     assert_eq!(days[0].request_count, 0);
@@ -5078,8 +5112,19 @@ fn test_merged_reasoning_models_keep_totals_filters_and_pooled_medians() -> Resu
         None,
         model,
         None,
+        true,
     )?;
     assert_eq!(trends.iter().map(|t| t.request_count).sum::<u64>(), 8);
+    let model_rows = trends
+        .iter()
+        .flat_map(|t| &t.model_stats)
+        .collect::<Vec<_>>();
+    assert!(model_rows.iter().all(|row| row.model == "gemini-4-argon"));
+    assert_eq!(
+        model_rows.iter().map(|row| row.request_count).sum::<u64>(),
+        8
+    );
+    assert!((model_rows.iter().map(|row| row.total_cost).sum::<f64>() - 26.0).abs() < 1e-9);
     let hourly = db.get_daily_trends(
         Some(ts - 3600),
         Some(ts + 1),
@@ -5087,6 +5132,7 @@ fn test_merged_reasoning_models_keep_totals_filters_and_pooled_medians() -> Resu
         None,
         model,
         None,
+        false,
     )?;
     assert_eq!(hourly.iter().map(|t| t.request_count).sum::<u64>(), 6);
     let logs = db.get_request_logs(

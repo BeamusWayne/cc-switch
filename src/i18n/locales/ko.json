@@ -2724,6 +2724,8 @@
       "cost": "비용",
       "requestsLegend": "요청 수",
       "titleMetric": "{{metric}} · {{granularity}}",
+      "unknownModel": "알 수 없는 모델",
+      "otherModels": "기타 모델",
       "hourly": "매시간",
       "daily": "일일",
       "weekly": "주간",

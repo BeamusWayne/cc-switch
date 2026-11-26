@@ -2729,6 +2729,8 @@
       "cost": "コスト",
       "requestsLegend": "リクエスト数",
       "titleMetric": "{{metric}} · {{granularity}}",
+      "unknownModel": "不明なモデル",
+      "otherModels": "その他のモデル",
       "hourly": "1 時間ごと",
       "daily": "1 日ごと",
       "weekly": "週ごと",

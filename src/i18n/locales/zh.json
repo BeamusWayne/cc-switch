@@ -2729,6 +2729,8 @@
       "cost": "成本",
       "requestsLegend": "请求数",
       "titleMetric": "{{metric}} · {{granularity}}",
+      "unknownModel": "未知模型",
+      "otherModels": "其他模型",
       "hourly": "按小时",
       "daily": "按天",
       "weekly": "按周",

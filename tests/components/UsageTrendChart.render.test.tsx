@@ -60,6 +60,12 @@ vi.mock("@/lib/query/usage", () => ({
         totalCacheCreationTokens: 0,
         totalCacheReadTokens: fixture.mixed ? 70 : 0,
         totalCost: "0.01",
+        modelStats: Array.from({ length: 10 }, (_, index) => ({
+          model: `model-${index + 1}`,
+          requestCount: index + 1,
+          totalCost: (10 - index) / 5500,
+          totalTokens: (index + 1) * 100,
+        })),
         ...(fixture.mixed && {
           runtimeStats: [
             {
@@ -298,6 +304,40 @@ describe("UsageTrendChart styles", () => {
     } finally {
       fixture.firstDate = null;
     }
+  });
+
+  it("stacks models in bars and retains the model breakdown when switching to lines", async () => {
+    const user = userEvent.setup();
+    const { container } = renderWithChartType(undefined, "cost");
+    await user.click(screen.getByRole("button", { name: "usage.model" }));
+
+    const legend = within(screen.getByTestId("usage-trend-legend"));
+    expect(legend.getAllByRole("listitem")).toHaveLength(9);
+    expect(legend.getByText("model-1")).toBeInTheDocument();
+    expect(legend.queryByText("model-10")).not.toBeInTheDocument();
+    const details = within(
+      screen.getByRole("complementary", { name: "usage.tabs.label" }),
+    );
+    expect(details.getByText("usage.trend.otherModels")).toBeInTheDocument();
+    const otherRow = details
+      .getByText("usage.trend.otherModels")
+      .closest("li")!;
+    expect(within(otherRow).getByText("5.5%")).toBeInTheDocument();
+
+    const bars = [
+      ...container.querySelectorAll(
+        '.recharts-rectangle[fill^="var(--chart-model-"]',
+      ),
+    ];
+    expect(bars).toHaveLength(8);
+    expect(new Set(bars.map((bar) => bar.getAttribute("x"))).size).toBe(1);
+    await user.click(
+      screen.getByRole("button", {
+        name: "usage.display.trendChartTypes.area",
+      }),
+    );
+    expect(container.querySelectorAll(".recharts-line")).toHaveLength(9);
+    expect(details.getByText("usage.trend.otherModels")).toBeInTheDocument();
   });
 
   it("shows each app's cache hit rate without additive shares", () => {

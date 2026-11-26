@@ -85,6 +85,7 @@ export const usageKeys = {
     filters?: UsageScopeFilters,
     liveEndTime?: boolean,
     period?: UsageTrendPeriod,
+    includeModels?: boolean,
   ) =>
     [
       ...usageKeys.all,
@@ -97,6 +98,7 @@ export const usageKeys = {
       filters?.providerName ?? null,
       filters?.model ?? null,
       period ?? null,
+      includeModels ?? false,
     ] as const,
   firstDate: (filters?: UsageScopeFilters) =>
     [
@@ -241,7 +243,10 @@ export function useUsageSummaryByApp(
 export function useUsageTrends(
   range: UsageRangeSelection,
   filters?: UsageScopeFilters,
-  options?: UsageQueryOptions & { period?: UsageTrendPeriod },
+  options?: UsageQueryOptions & {
+    period?: UsageTrendPeriod;
+    includeModels?: boolean;
+  },
 ) {
   const effective = normalizeScopeFilters(filters);
   return useQuery({
@@ -252,6 +257,7 @@ export function useUsageTrends(
       effective,
       range.liveEndTime,
       options?.period,
+      options?.includeModels,
     ),
     queryFn: () => {
       const { startDate, endDate } = resolveUsageRange(range);
@@ -262,6 +268,7 @@ export function useUsageTrends(
         effective.providerName,
         effective.model,
         options?.period,
+        options?.includeModels,
       );
     },
     enabled: options?.enabled ?? true,

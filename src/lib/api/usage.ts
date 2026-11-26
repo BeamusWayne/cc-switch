@@ -93,6 +93,7 @@ export const usageApi = {
     providerName?: string,
     model?: string,
     period?: UsageTrendPeriod,
+    includeModels?: boolean,
   ): Promise<DailyStats[]> => {
     return invoke("get_usage_trends", {
       startDate,
@@ -101,6 +102,7 @@ export const usageApi = {
       providerName,
       model,
       period,
+      includeModels,
     });
   },
 
